@@ -2,7 +2,12 @@
 -- This creates the replacement Postgres schema, RLS rules, and private bill storage.
 create extension if not exists pgcrypto;
 
-create type public.user_role as enum ('ADMIN', 'VIEWER');
+do $$
+begin
+  create type public.user_role as enum ('ADMIN', 'VIEWER');
+exception
+  when duplicate_object then null;
+end $$;
 
 create table public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
@@ -76,6 +81,55 @@ create policy "admins read audit logs" on public.audit_logs for select to authen
 grant select on public.profiles, public.donations, public.expenses, public.bills to authenticated;
 grant insert, update, delete on public.profiles, public.donations, public.expenses, public.bills to authenticated;
 grant select on public.audit_logs to authenticated;
+
+create or replace function public.write_audit_log()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  actor public.profiles%rowtype;
+  row_id bigint;
+  audit_module text;
+  old_row jsonb;
+  new_row jsonb;
+begin
+  if auth.uid() is null then
+    return coalesce(new, old);
+  end if;
+
+  select * into actor from public.profiles where id = auth.uid();
+  audit_module := case tg_table_name
+    when 'donations' then 'DONATION'
+    when 'expenses' then 'EXPENSE'
+    when 'bills' then 'BILL'
+    when 'profiles' then 'USER'
+  end;
+  old_row := case when tg_op in ('UPDATE', 'DELETE') then to_jsonb(old) end;
+  new_row := case when tg_op in ('INSERT', 'UPDATE') then to_jsonb(new) end;
+  if tg_table_name <> 'profiles' then
+    row_id := coalesce((new_row ->> 'id')::bigint, (old_row ->> 'id')::bigint);
+  end if;
+
+  insert into public.audit_logs (user_id, user_name, user_email, action, module, record_id, description, old_values, new_values)
+  values (
+    auth.uid(), actor.name, actor.email, tg_op, audit_module, row_id,
+    lower(tg_op) || ' ' || lower(audit_module), old_row, new_row
+  );
+  return coalesce(new, old);
+end;
+$$;
+
+drop trigger if exists audit_donations on public.donations;
+drop trigger if exists audit_expenses on public.expenses;
+drop trigger if exists audit_bills on public.bills;
+drop trigger if exists audit_profiles on public.profiles;
+create trigger audit_donations after insert or update or delete on public.donations for each row execute function public.write_audit_log();
+create trigger audit_expenses after insert or update or delete on public.expenses for each row execute function public.write_audit_log();
+create trigger audit_bills after insert or update or delete on public.bills for each row execute function public.write_audit_log();
+create trigger audit_profiles after update on public.profiles for each row execute function public.write_audit_log();
+
 grant usage, select on all sequences in schema public to authenticated;
 
 insert into storage.buckets (id, name, public) values ('bills', 'bills', false) on conflict (id) do nothing;

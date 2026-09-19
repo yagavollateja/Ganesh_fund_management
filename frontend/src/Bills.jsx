@@ -1,0 +1,11 @@
+import { useEffect, useState } from 'react';
+import { api } from './api';
+
+export default function Bills({ admin }) {
+  const [rows, setRows] = useState([]), [error, setError] = useState('');
+  const load = async () => { try { setRows(await api('/bills')); } catch (e) { setError(e.message); } };
+  useEffect(() => { load(); }, []);
+  const upload = async event => { event.preventDefault(); try { await api('/bills', { method: 'POST', body: new FormData(event.target) }); event.target.reset(); await load(); } catch (e) { setError(e.message); } };
+  const download = async row => { try { const blob = await api(`/bills/${row.id}/download`); const url = URL.createObjectURL(blob), link = document.createElement('a'); link.href = url; link.download = row.file_name; link.click(); URL.revokeObjectURL(url); } catch (e) { setError(e.message); } };
+  return <><div className="card border-0 shadow-sm mb-3"><div className="card-body"><h5>Bill & receipt repository</h5><p className="text-muted">PDF, JPG, PNG · max 8 MB · attach to one financial record</p>{admin && <form onSubmit={upload} className="row g-2"><div className="col-md-3"><input name="expense_id" className="form-control" placeholder="Expense ID (optional)" /></div><div className="col-md-3"><input name="donation_id" className="form-control" placeholder="Donation ID (optional)" /></div><div className="col-md-4"><input name="file" type="file" accept=".pdf,.jpg,.jpeg,.png" className="form-control" required /></div><div className="col-md-2"><button className="btn btn-primary w-100">Upload</button></div></form>}</div></div>{error && <div className="alert alert-danger">{error}</div>}<div className="card border-0 shadow-sm table-responsive"><table className="table mb-0"><thead><tr><th>File</th><th>Linked record</th><th>Uploaded by</th><th>Uploaded at</th><th /></tr></thead><tbody>{rows.map(row => <tr key={row.id}><td>{row.file_name}</td><td>{row.expense_id ? `Expense #${row.expense_id}` : `Donation #${row.donation_id}`}</td><td>{row.uploaded_by_name || '—'}</td><td>{new Date(row.uploaded_at).toLocaleString()}</td><td><button className="btn btn-sm btn-outline-primary" onClick={() => download(row)}>Download</button></td></tr>)}</tbody></table></div></>;
+}
